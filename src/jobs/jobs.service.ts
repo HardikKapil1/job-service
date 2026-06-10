@@ -5,6 +5,8 @@ import { Job } from './job.entity';
 import { CreateJobDto } from './dto/create-job.dto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import type { Cache } from 'cache-manager';
+import { Inject } from '@nestjs/common';
 
 @Injectable()
 export class JobsService {
@@ -13,6 +15,8 @@ export class JobsService {
     private readonly jobsRepository: Repository<Job>,
     @InjectQueue('job-queue')
     private readonly jobQueue: Queue,
+    @Inject('CACHE_MANAGER')
+    private readonly cacheManager: Cache,
   ) {}
 
   async create(createJobDto: CreateJobDto): Promise<Job> {
@@ -27,10 +31,25 @@ export class JobsService {
   }
 
   async findOne(id: string): Promise<Job> {
+    const cacheKey = `job:${id}`;
+
+    // 1. Check Redis first!
+    const cachedJob = await this.cacheManager.get<Job>(cacheKey);
+    if (cachedJob) {
+      console.log(`Returning job ${id} from Redis Cache!`);
+      return cachedJob;
+    }
+
+    // 2. If not in cache, query PostgreSQL
+    console.log(`Cache miss! Fetching job ${id} from PostgreSQL...`);
     const job = await this.jobsRepository.findOne({ where: { id } });
     if (!job) {
       throw new NotFoundException(`Job with ID ${id} not found`);
     }
+
+    // 3. Save the result to Redis so the next request is fast
+    await this.cacheManager.set(cacheKey, job);
+
     return job;
   }
 
